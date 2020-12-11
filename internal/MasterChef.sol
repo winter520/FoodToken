@@ -28,13 +28,17 @@ contract MasterChef is Ownable {
     // The REWARD TOKEN!
     FoodToken public rewardToken;
     // REWARD tokens created per block.
-    uint256 public rewardPerBlock;
+    uint256 private _rewardPerBlock;
     // trade reward address
     address public tradeRewardAddr;
+    // reduce reward cycle (of block numbers)
+    uint256 public reduceCycle = 2 * 28800;
+    uint256 public reducePercent = 50;
+    uint256 public lastReduceBlock;
 
     // Info of each pool.
     PoolInfo[] public poolInfo;
-    mapping (address => uint256) poolIndex;
+    mapping (address => uint256) public poolIndex;
     // Info of each user that stakes LP tokens.
     mapping (uint256 => mapping (address => UserInfo)) public userInfo;
     // Total allocation points. Must be the sum of all allocation points in all pools.
@@ -48,17 +52,42 @@ contract MasterChef is Ownable {
 
     constructor(
         FoodToken _rewardToken,
-        uint256 _rewardPerBlock,
+        uint256 _rewardPerBlockVal,
         uint256 _startBlock
     ) public {
         rewardToken = _rewardToken;
-        rewardPerBlock = _rewardPerBlock;
+        _rewardPerBlock = _rewardPerBlockVal;
         startBlock = _startBlock;
         tradeRewardAddr = msg.sender;
+        lastReduceBlock = startBlock;
     }
 
     function poolLength() external view returns (uint256) {
         return poolInfo.length;
+    }
+
+    function rewardPerBlock() public view returns (uint256) {
+        uint256 start = lastReduceBlock;
+        uint256 rewardPB = _rewardPerBlock;
+        while (block.number >= start.add(reduceCycle)) {
+            start = start.add(reduceCycle);
+            rewardPB = rewardPB.mul(reducePercent).div(100);
+        }
+        return rewardPB;
+    }
+
+    function setRewardPerBlock(uint256 _rewardPerBlockVal, bool _withUpdate) public onlyOwner {
+        if (_withUpdate) {
+            massUpdatePools();
+        }
+        _rewardPerBlock = _rewardPerBlockVal;
+    }
+
+    function setReduce(uint256 _start, uint256 _reduceCycle, uint256 _reducePercent) public onlyOwner {
+        require(block.number < _start.add(_reduceCycle), "passed cycle");
+        lastReduceBlock = _start;
+        reduceCycle = _reduceCycle;
+        reducePercent = _reducePercent;
     }
 
     // Add a new lp to the pool. Can only be called by the owner.
@@ -95,7 +124,7 @@ contract MasterChef is Ownable {
         uint256 lpSupply = pool.lpToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 multiplier = block.number.sub(pool.lastRewardBlock);
-            uint256 tokenReward = multiplier.mul(rewardPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
+            uint256 tokenReward = multiplier.mul(rewardPerBlock()).mul(pool.allocPoint).div(totalAllocPoint);
             accRewardPerShare = accRewardPerShare.add(tokenReward.mul(1e12).div(lpSupply));
         }
         return user.amount.mul(accRewardPerShare).div(1e12).sub(user.rewardDebt);
@@ -111,6 +140,10 @@ contract MasterChef is Ownable {
 
     // Update reward variables of the given pool to be up-to-date.
     function updatePool(uint256 _pid) public {
+        while (block.number >= lastReduceBlock.add(reduceCycle)) {
+            lastReduceBlock = lastReduceBlock.add(reduceCycle);
+            _rewardPerBlock = _rewardPerBlock.mul(reducePercent).div(100);
+        }
         PoolInfo storage pool = poolInfo[_pid];
         if (block.number <= pool.lastRewardBlock) {
             return;
@@ -121,7 +154,7 @@ contract MasterChef is Ownable {
             return;
         }
         uint256 multiplier = block.number.sub(pool.lastRewardBlock);
-        uint256 tokenReward = multiplier.mul(rewardPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
+        uint256 tokenReward = multiplier.mul(_rewardPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
         rewardToken.mint(tradeRewardAddr, tokenReward.div(4)); // 20% to tradeRewardAddr
         rewardToken.mint(address(this), tokenReward);
         pool.accRewardPerShare = pool.accRewardPerShare.add(tokenReward.mul(1e12).div(lpSupply));
